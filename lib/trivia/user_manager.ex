@@ -1,10 +1,10 @@
 defmodule Trivia.UserManager do
   @moduledoc """
-  Módulo encargado de manejar el registro, login y almacenamiento
-  de usuarios en users.dat, además de iniciar partidas de trivia.
+  Maneja registro, login y almacenamiento de usuarios.
+  Ahora integrado con ConnectionServer para nodos distribuidos.
   """
 
-  alias Trivia.Game
+  alias Trivia.{Supervisor, Game, ConnectionServer}
 
   @users_file "data/users.dat"
   defstruct nombre: "", contrasena: "", puntaje: 0
@@ -43,8 +43,11 @@ defmodule Trivia.UserManager do
     contrasena = IO.gets("Contraseña: ") |> String.trim()
 
     case registrar_usuario(nombre, contrasena) do
-      {:ok, msg} -> IO.puts("✅ #{msg}")
-      {:error, msg} -> IO.puts("❌ #{msg}")
+      {:ok, msg} ->
+        IO.puts("✅ #{msg}")
+
+      {:error, msg} ->
+        IO.puts("❌ #{msg}")
     end
   end
 
@@ -54,13 +57,20 @@ defmodule Trivia.UserManager do
     nombre = IO.gets("Nombre de usuario: ") |> String.trim()
     contrasena = IO.gets("Contraseña: ") |> String.trim()
 
-    case login(nombre, contrasena) do
-      {:ok, usuario} ->
-        IO.puts("\n✅ Sesión iniciada correctamente como #{usuario.nombre}")
+    # Conectamos usando ConnectionServer global
+    case ConnectionServer.connect(nombre, contrasena) do
+      {:ok, :registered} ->
+        IO.puts("✅ Usuario registrado y conectado como #{nombre}")
+        menu_usuario(%{nombre: nombre, puntaje: 0})
+
+      {:ok, :connected} ->
+        IO.puts("✅ Sesión iniciada correctamente como #{nombre}")
+        # cargar puntaje localmente
+        usuario = cargar_usuarios() |> Enum.find(fn u -> u.nombre == nombre end)
         menu_usuario(usuario)
 
-      {:error, msg} ->
-        IO.puts("❌ #{msg}")
+      {:error, :invalid_credentials} ->
+        IO.puts("❌ Contraseña incorrecta.")
     end
   end
 
@@ -69,7 +79,8 @@ defmodule Trivia.UserManager do
     IO.puts("\n--- Menú de Usuario ---")
     IO.puts("1. Ver puntaje")
     IO.puts("2. Cerrar sesión")
-    IO.puts("3. Jugar trivia")
+    IO.puts("3. Crear partida trivia")
+    IO.puts("4. Listar partidas activas")
 
     opcion = IO.gets("Seleccione una opción: ") |> String.trim()
 
@@ -79,22 +90,37 @@ defmodule Trivia.UserManager do
         menu_usuario(usuario)
 
       "2" ->
+        ConnectionServer.disconnect(usuario.nombre)
         IO.puts("👋 Sesión cerrada.")
 
       "3" ->
         tema = IO.gets("\nElige un tema: ") |> String.trim()
         cantidad = IO.gets("¿Cuántas preguntas deseas?: ") |> String.trim() |> String.to_integer()
+        game_id = "game_" <> Integer.to_string(:erlang.unique_integer([:positive]))
 
-        # Jugar partida
-        juego = Game.iniciar_partida(tema, cantidad)
+        # Crear partida supervisada
+        {:ok, _pid} =
+          Supervisor.start_game(%{
+            game_id: game_id,
+            tema: tema,
+            preguntas_count: cantidad,
+            tiempo_ms: 10_000,
+            max_players: 4,
+            creator: usuario.nombre
+          })
 
-        # Actualizar puntaje del usuario
-        nuevo_puntaje = usuario.puntaje + juego.puntaje
-        IO.puts("\n⭐ Tu nuevo puntaje total es: #{nuevo_puntaje}")
+        # Unir al creador usando el PID local
+        {:ok, _state} = Game.join(game_id, usuario.nombre, self())
+        Game.start_game(game_id, usuario.nombre)
 
-        actualizar_puntaje(usuario.nombre, nuevo_puntaje)
+        IO.puts("\n🎮 Partida #{game_id} iniciada en tema '#{tema}' con #{cantidad} preguntas.")
+        menu_usuario(usuario)
 
-        menu_usuario(%{usuario | puntaje: nuevo_puntaje})
+      "4" ->
+        activos = Supervisor.list_games()
+        IO.puts("\n📜 Partidas activas:")
+        Enum.each(activos, fn g -> IO.puts("- #{g}") end)
+        menu_usuario(usuario)
 
       _ ->
         IO.puts("❌ Opción inválida.")
@@ -102,7 +128,7 @@ defmodule Trivia.UserManager do
     end
   end
 
-  # === LÓGICA DE REGISTRO Y LOGIN ===
+  # === LÓGICA REGISTRO/LOGIN local ===
   def registrar_usuario(nombre, contrasena) do
     usuarios = cargar_usuarios()
 
@@ -114,20 +140,6 @@ defmodule Trivia.UserManager do
 
       _ ->
         {:error, "El usuario ya existe."}
-    end
-  end
-
-  def login(nombre, contrasena) do
-    usuarios = cargar_usuarios()
-
-    case Enum.find(usuarios, fn u -> u.nombre == nombre end) do
-      nil -> {:error, "Usuario no encontrado."}
-      usuario ->
-        if usuario.contrasena == contrasena do
-          {:ok, usuario}
-        else
-          {:error, "Contraseña incorrecta."}
-        end
     end
   end
 
@@ -151,14 +163,9 @@ defmodule Trivia.UserManager do
   end
 
   defp guardar_usuario(usuario) do
-    File.write!(
-      @users_file,
-      "#{usuario.nombre},#{usuario.contrasena},#{usuario.puntaje}\n",
-      [:append]
-    )
+    File.write!(@users_file, "#{usuario.nombre},#{usuario.contrasena},#{usuario.puntaje}\n", [:append])
   end
 
-  # === NUEVO: ACTUALIZAR PUNTAJE EN EL ARCHIVO ===
   def actualizar_puntaje(nombre, nuevo_puntaje) do
     usuarios_actualizados =
       cargar_usuarios()
