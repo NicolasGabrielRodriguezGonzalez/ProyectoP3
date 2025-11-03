@@ -6,19 +6,20 @@ defmodule Trivia.Game do
   GenServer de una partida de trivia distribuida.
   """
 
-  defstruct [
-    :game_id,
-    :tema,
-    preguntas: [],
-    tiempo_ms: 15_000,
-    max_players: 4,
-    players: %{},        # %{username => {pid, node}}
-    scores: %{},         # %{username => integer}
-    status: :waiting,    # :waiting | :running | :finished
-    current_index: 0,
-    timer_ref: nil,
-    creator: nil
-  ]
+ defstruct [
+  :game_id,
+  :tema,
+  preguntas: [],
+  preguntas_count: 5,   # 👈 nuevo
+  tiempo_ms: 15_000,
+  max_players: 4,
+  players: %{},
+  scores: %{},
+  status: :waiting,
+  current_index: 0,
+  timer_ref: nil,
+  creator: nil
+]
 
   # ----------------------
   # API Distribuida
@@ -61,17 +62,19 @@ defmodule Trivia.Game do
   # Callbacks
   # ----------------------
 
-  def init(opts) do
-    state = %__MODULE__{
-      game_id: opts.game_id,
-      tema: opts.tema || "general",
-      tiempo_ms: opts.tiempo_ms || 15_000,
-      max_players: opts.max_players || 4,
-      creator: opts.creator
-    }
+ def init(opts) do
+  state = %__MODULE__{
+    game_id: opts.game_id,
+    tema: opts.tema || "general",
+    tiempo_ms: opts.tiempo_ms || 15_000,
+    max_players: opts.max_players || 4,
+    creator: opts.creator,
+    preguntas_count: opts.preguntas_count || 5,  # 👈 nuevo campo
+    status: :waiting
+  }
 
-    {:ok, state}
-  end
+  {:ok, state}
+end
 
   # Join
   def handle_call({:join, username, pid, node}, _from, %__MODULE__{status: :waiting} = s) do
@@ -91,16 +94,20 @@ defmodule Trivia.Game do
     {:reply, {:error, :not_accepting}, s}
   end
 
-  # Start game
-  def handle_call({:start_game, starter}, _from, %__MODULE__{creator: starter} = s) do
-    preguntas = QuestionBank.get_random_questions(s.tema, 10)
-    new_state = %{s | preguntas: preguntas, status: :running, current_index: 0}
+ # Start game
+def handle_call({:start_game, starter}, _from, %__MODULE__{creator: starter} = s) do
+  # Obtenemos solo la cantidad de preguntas solicitadas
+  preguntas = Trivia.QuestionBank.get_random_questions(s.tema, s.preguntas_count)
 
+  if preguntas == [] do
+    {:reply, {:error, :no_questions}, s}
+  else
+    new_state = %{s | preguntas: preguntas, status: :running, current_index: 0}
     broadcast(new_state, {:game_started, s.game_id})
     send_question(new_state)
-
     {:reply, {:ok, :started}, new_state}
   end
+end
 
   def handle_call({:start_game, _starter}, _from, s) do
     {:reply, {:error, :not_creator}, s}

@@ -16,16 +16,18 @@ defmodule Trivia.QuestionBank do
   end
 
   # Parsea una línea CSV en un mapa
-  defp parse_line(line) do
-    [tema, texto, a, b, c, d, correcta] = String.split(line, ",", trim: true)
-    %{
-      tema: tema,
-      texto: texto,
-      opciones: %{A: a, B: b, C: c, D: d},
-      correcta: String.to_atom(correcta)
-    }
-  end
+  defp parse_line(linea) do
+  [tema, pregunta, a, b, c, d, correcta] =
+    String.split(linea, ",")
+    |> Enum.map(&String.trim/1)
 
+  %{
+    tema: tema,
+    pregunta: pregunta,  # 👈 antes decía :texto
+    opciones: %{A: a, B: b, C: c, D: d},
+    correcta: String.to_atom(String.trim(correcta))
+  }
+end
   # Devuelve n preguntas aleatorias filtradas por tema
   def get_random_questions(tema, n) do
     load_questions()
