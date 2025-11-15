@@ -251,19 +251,29 @@ defp esperar_eventos(usuario, game_id) do
     {:question, index, pregunta} ->
       IO.puts("\n🧠 Pregunta ##{index + 1}: #{pregunta.pregunta}")
 
-      # Mostrar opciones correctamente sin error de clave
       IO.puts("A) #{pregunta.opciones[:A] || pregunta.opciones[:a]}")
       IO.puts("B) #{pregunta.opciones[:B] || pregunta.opciones[:b]}")
       IO.puts("C) #{pregunta.opciones[:C] || pregunta.opciones[:c]}")
       IO.puts("D) #{pregunta.opciones[:D] || pregunta.opciones[:d]}")
 
-      # Normalizar respuesta
-      respuesta =
-        IO.gets("👉 Tu respuesta (A/B/C/D): ")
-        |> String.trim()
-        |> String.upcase()
+      # 👇 Leer la respuesta en OTRO proceso
+      parent = self()
 
-      Game.answer(game_id, usuario.nombre, respuesta)
+      spawn(fn ->
+        respuesta =
+          IO.gets("👉 Tu respuesta (A/B/C/D): ")
+          |> to_string()
+          |> String.trim()
+          |> String.upcase()
+
+        # Enviar la respuesta al servidor del juego
+        Trivia.Game.answer(game_id, usuario.nombre, respuesta)
+
+        # (Opcional) avisar al proceso principal, si quisieras algo más:
+        # send(parent, {:respuesta_enviada, index})
+      end)
+
+      # Muy importante: el proceso principal sigue escuchando eventos
       esperar_eventos(usuario, game_id)
 
     {:question_timeout, idx, correcta} ->
@@ -288,4 +298,5 @@ defp esperar_eventos(usuario, game_id) do
       esperar_eventos(usuario, game_id)
   end
 end
+
 end
