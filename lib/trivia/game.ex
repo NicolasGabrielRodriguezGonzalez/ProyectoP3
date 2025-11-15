@@ -1,25 +1,26 @@
 defmodule Trivia.Game do
   use GenServer
-  alias Trivia.QuestionBank
+  alias Trivia.ConnectionServer
 
   @moduledoc """
   GenServer de una partida de trivia distribuida.
   """
 
- defstruct [
-  :game_id,
-  :tema,
-  preguntas: [],
-  preguntas_count: 5,   # 👈 nuevo
-  tiempo_ms: 15_000,
-  max_players: 4,
-  players: %{},
-  scores: %{},
-  status: :waiting,
-  current_index: 0,
-  timer_ref: nil,
-  creator: nil
-]
+  defstruct [
+    :game_id,
+    :tema,
+    preguntas: [],
+    # 👈 nuevo
+    preguntas_count: 5,
+    tiempo_ms: 15_000,
+    max_players: 4,
+    players: %{},
+    scores: %{},
+    status: :waiting,
+    current_index: 0,
+    timer_ref: nil,
+    creator: nil
+  ]
 
   # ----------------------
   # API Distribuida
@@ -62,19 +63,20 @@ defmodule Trivia.Game do
   # Callbacks
   # ----------------------
 
- def init(opts) do
-  state = %__MODULE__{
-    game_id: opts.game_id,
-    tema: opts.tema || "general",
-    tiempo_ms: opts.tiempo_ms || 15_000,
-    max_players: opts.max_players || 4,
-    creator: opts.creator,
-    preguntas_count: opts.preguntas_count || 5,  # 👈 nuevo campo
-    status: :waiting
-  }
+  def init(opts) do
+    state = %__MODULE__{
+      game_id: opts.game_id,
+      tema: opts.tema || "general",
+      tiempo_ms: opts.tiempo_ms || 15_000,
+      max_players: opts.max_players || 4,
+      creator: opts.creator,
+      # 👈 nuevo campo
+      preguntas_count: opts.preguntas_count || 5,
+      status: :waiting
+    }
 
-  {:ok, state}
-end
+    {:ok, state}
+  end
 
   # Join
   def handle_call({:join, username, pid, node}, _from, %__MODULE__{status: :waiting} = s) do
@@ -94,20 +96,20 @@ end
     {:reply, {:error, :not_accepting}, s}
   end
 
- # Start game
-def handle_call({:start_game, starter}, _from, %__MODULE__{creator: starter} = s) do
-  # Obtenemos solo la cantidad de preguntas solicitadas
-  preguntas = Trivia.QuestionBank.get_random_questions(s.tema, s.preguntas_count)
+  # Start game
+  def handle_call({:start_game, starter}, _from, %__MODULE__{creator: starter} = s) do
+    # Obtenemos solo la cantidad de preguntas solicitadas
+    preguntas = Trivia.QuestionBank.get_random_questions(s.tema, s.preguntas_count)
 
-  if preguntas == [] do
-    {:reply, {:error, :no_questions}, s}
-  else
-    new_state = %{s | preguntas: preguntas, status: :running, current_index: 0}
-    broadcast(new_state, {:game_started, s.game_id})
-    send_question(new_state)
-    {:reply, {:ok, :started}, new_state}
+    if preguntas == [] do
+      {:reply, {:error, :no_questions}, s}
+    else
+      new_state = %{s | preguntas: preguntas, status: :running, current_index: 0}
+      broadcast(new_state, {:game_started, s.game_id})
+      send_question(new_state)
+      {:reply, {:ok, :started}, new_state}
+    end
   end
-end
 
   def handle_call({:start_game, _starter}, _from, s) do
     {:reply, {:error, :not_creator}, s}
@@ -168,6 +170,10 @@ end
     next_index = index + 1
 
     if next_index >= length(s.preguntas) do
+      # Registrar resultados globales en el servidor de conexión
+      ConnectionServer.register_scores(s.game_id, s.tema, s.scores)
+
+      # Notificar a todos los jugadores que la partida terminó
       broadcast(s, {:game_finished, s.scores})
       final_state = %{s | status: :finished, timer_ref: nil}
       {:noreply, final_state}
@@ -185,15 +191,14 @@ end
   # ----------------------
 
   # Broadcast a todos los jugadores (incluso remotos)
-defp broadcast(%__MODULE__{players: players}, msg) do
-  Enum.each(players, fn {_user, {pid, node}} ->
-    if Node.ping(node) == :pong do
-      # enviar el mensaje al PID remoto usando :rpc.cast
-      :rpc.cast(node, Kernel, :send, [pid, msg])
-    end
-  end)
-end
-
+  defp broadcast(%__MODULE__{players: players}, msg) do
+    Enum.each(players, fn {_user, {pid, node}} ->
+      if Node.ping(node) == :pong do
+        # enviar el mensaje al PID remoto usando :rpc.cast
+        :rpc.cast(node, Kernel, :send, [pid, msg])
+      end
+    end)
+  end
 
   # Enviar pregunta actual
   defp send_question(%__MODULE__{current_index: idx, preguntas: preguntas, tiempo_ms: tiempo} = s) do
